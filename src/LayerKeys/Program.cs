@@ -356,10 +356,10 @@ namespace LayerKeys
 
         IntPtr midiIn = IntPtr.Zero, midiOut = IntPtr.Zero;
         Midi.MidiInProc midiCallback;
-        string connectedDevice = "";
-        int lastDeviceCount = -1, octave = 0, tempo = 100, bars = 0, program = 0;
+        string connectedDevice = "", midiDeviceSignature = "";
+        int connectedDeviceIndex = -1, octave = 0, tempo = 100, bars = 0, program = 0;
         int recordingStartMs;
-        bool playing, recording;
+        bool playing, recording, refreshingMidiDevices;
         bool exporting, abortExportRequested;
         long transportStart, lastElapsed;
         readonly Stopwatch clock = Stopwatch.StartNew();
@@ -372,7 +372,7 @@ namespace LayerKeys
 
         Label connectionLabel, octaveLabel, statusLabel, barLabel, hintLabel;
         Button recordButton, playButton, stopButton, splitButton, clearButton, saveButton, loadButton, exportWavButton, exportMp3Button, exportMidiButton;
-        ComboBox soundBox, barsBox, recordModeBox;
+        ComboBox soundBox, barsBox, recordModeBox, midiInputBox;
         NumericUpDown tempoBox;
         PianoControl piano;
         ArrangementView arrangement;
@@ -447,6 +447,9 @@ namespace LayerKeys
             barsBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(339, 173), Width = 100, FlatStyle = FlatStyle.Flat };
             barsBox.Items.AddRange(new object[] { "No loop", "2 bars", "4 bars", "8 bars" }); barsBox.SelectedIndex = 0;
             barsBox.SelectedIndexChanged += delegate { int[] vals = {0,2,4,8}; bars = vals[barsBox.SelectedIndex]; barLabel.Text = "1 / " + TimelineBars(); RestartIfPlaying(); DrawTracks(); };
+            Label inputCaption = MakeLabel("MIDI INPUT", 8, FontStyle.Bold, Muted); inputCaption.Location = new Point(460, 154);
+            midiInputBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(459, 173), Width = 245, FlatStyle = FlatStyle.Flat };
+            midiInputBox.SelectedIndexChanged += delegate { if (!refreshingMidiDevices && midiInputBox.Enabled && midiInputBox.SelectedIndex >= 0) ConnectMidiDevice(midiInputBox.SelectedIndex); };
 
             Button minus = MakeButton("−   OCTAVE", Paper, Ink, 108, 55); minus.Location = new Point(play.Width - 306, 52); minus.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             Button plus = MakeButton("+   OCTAVE", Paper, Ink, 108, 55); plus.Location = new Point(play.Width - 138, 52); plus.Anchor = AnchorStyles.Top | AnchorStyles.Right;
@@ -455,7 +458,7 @@ namespace LayerKeys
             Label shortcuts = MakeLabel("Z / X keys", 8, FontStyle.Regular, Muted); shortcuts.Location = new Point(play.Width - 197, 108); shortcuts.Anchor = AnchorStyles.Top | AnchorStyles.Right;
 
             piano = new PianoControl { Location = new Point(38, 225), Width = play.Width - 76, Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top };
-            play.Controls.AddRange(new Control[] { eyebrow, title, hintLabel, soundCaption, soundBox, tempoCaption, tempoBox, barsCaption, barsBox, minus, octaveLabel, plus, shortcuts, piano });
+            play.Controls.AddRange(new Control[] { eyebrow, title, hintLabel, soundCaption, soundBox, tempoCaption, tempoBox, barsCaption, barsBox, inputCaption, midiInputBox, minus, octaveLabel, plus, shortcuts, piano });
 
             RoundedPanel studio = new RoundedPanel { Height = 450, Width = stack.Width, BackColor = Dark, Margin = Padding.Empty, Padding = new Padding(34), Location = new Point(0, 403) };
             stack.Controls.Add(studio); stack.SizeChanged += delegate { studio.Width = stack.Width; };
@@ -520,25 +523,54 @@ namespace LayerKeys
         void RefreshMidiDevice()
         {
             int count = (int)Midi.midiInGetNumDevs();
-            if (count == lastDeviceCount && (count == 0 || midiIn != IntPtr.Zero)) return;
-            CloseMidiInput(); lastDeviceCount = count;
+            List<string> names = new List<string>();
+            for (int i = 0; i < count; i++)
+            {
+                Midi.MidiInCaps caps; string name = "MIDI input " + (i + 1);
+                if (Midi.midiInGetDevCaps((uint)i, out caps, (uint)Marshal.SizeOf(typeof(Midi.MidiInCaps))) == 0) name = caps.name;
+                names.Add(name);
+            }
+            string signature = string.Join("\u001f", names.ToArray());
+            if (signature == midiDeviceSignature && (count == 0 || midiIn != IntPtr.Zero)) return;
+            midiDeviceSignature = signature; CloseMidiInput();
+            refreshingMidiDevices = true; midiInputBox.Items.Clear();
             if (count <= 0)
             {
-                connectedDevice = "";
+                connectedDevice = ""; connectedDeviceIndex = -1;
+                midiInputBox.Items.Add("No MIDI inputs detected"); midiInputBox.SelectedIndex = 0; midiInputBox.Enabled = false; refreshingMidiDevices = false;
                 connectionLabel.Text = "●  Plug in a MIDI keyboard";
                 connectionLabel.ForeColor = Muted;
                 return;
             }
-            Midi.MidiInCaps caps;
-            string name = "MIDI keyboard";
-            if (Midi.midiInGetDevCaps(0, out caps, (uint)Marshal.SizeOf(typeof(Midi.MidiInCaps))) == 0) name = caps.name;
-            if (Midi.midiInOpen(out midiIn, 0, midiCallback, IntPtr.Zero, Midi.CallbackFunction) == 0)
+            foreach (string name in names) midiInputBox.Items.Add(name);
+            midiInputBox.Enabled = true;
+            int selected = -1;
+            if (!IsVirtualMidiPort(connectedDevice)) selected = names.IndexOf(connectedDevice);
+            if (selected < 0) for (int i = 0; i < names.Count; i++) if (!IsVirtualMidiPort(names[i])) { selected = i; break; }
+            if (selected < 0) selected = Math.Max(0, names.IndexOf(connectedDevice));
+            midiInputBox.SelectedIndex = selected; refreshingMidiDevices = false;
+            ConnectMidiDevice(selected);
+        }
+
+        bool IsVirtualMidiPort(string name)
+        {
+            string value = (name ?? "").ToLowerInvariant();
+            return value.Contains("loopmidi") || value.Contains("midi keyboard emulator");
+        }
+
+        void ConnectMidiDevice(int index)
+        {
+            int count = (int)Midi.midiInGetNumDevs(); if (index < 0 || index >= count) return;
+            CloseMidiInput();
+            Midi.MidiInCaps caps; string name = "MIDI input " + (index + 1);
+            if (Midi.midiInGetDevCaps((uint)index, out caps, (uint)Marshal.SizeOf(typeof(Midi.MidiInCaps))) == 0) name = caps.name;
+            if (Midi.midiInOpen(out midiIn, (uint)index, midiCallback, IntPtr.Zero, Midi.CallbackFunction) == 0)
             {
-                Midi.midiInStart(midiIn); connectedDevice = name;
+                Midi.midiInStart(midiIn); connectedDevice = name; connectedDeviceIndex = index;
                 connectionLabel.Text = "●  " + name; connectionLabel.ForeColor = Teal;
                 hintLabel.Text = "Your keyboard is connected. Play a note.";
             }
-            else { midiIn = IntPtr.Zero; connectionLabel.Text = "●  Keyboard is busy in another app"; connectionLabel.ForeColor = Coral; }
+            else { midiIn = IntPtr.Zero; connectedDeviceIndex = -1; connectionLabel.Text = "●  " + name + " is busy"; connectionLabel.ForeColor = Coral; }
         }
 
         void MidiInput(IntPtr handle, uint message, IntPtr instance, IntPtr param1, IntPtr param2)

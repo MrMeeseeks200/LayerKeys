@@ -2,7 +2,7 @@ LAYER KEYS — QUICK START
 ========================
 
 1. Plug your USB MIDI keyboard into Windows.
-2. Double-click LayerKeysStudio-v8.exe.
+2. Double-click LayerKeysStudio-v9.exe.
 3. Play. Layer Keys automatically connects to the first available MIDI input.
 
 PLAYING
@@ -10,6 +10,8 @@ PLAYING
 - Use the large − OCTAVE and + OCTAVE buttons to change range.
 - Keyboard shortcuts: Z = octave down, X = octave up.
 - Choose a sound from the Sound menu.
+- Use the MIDI INPUT menu if more than one MIDI device is connected. Layer Keys
+  automatically prefers a physical keyboard over loopMIDI virtual ports.
 
 RECORDING AND LAYERING
 ----------------------
