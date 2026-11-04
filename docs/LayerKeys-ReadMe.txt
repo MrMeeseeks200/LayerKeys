@@ -2,7 +2,7 @@ LAYER KEYS — QUICK START
 ========================
 
 1. Plug your USB MIDI keyboard into Windows.
-2. Double-click LayerKeysStudio-v9.exe.
+2. Double-click LayerKeysStudio-v12.exe.
 3. Play. Layer Keys automatically connects to the first available MIDI input.
 
 PLAYING
@@ -12,6 +12,9 @@ PLAYING
 - Choose a sound from the Sound menu.
 - Use the MIDI INPUT menu if more than one MIDI device is connected. Layer Keys
   automatically prefers a physical keyboard over loopMIDI virtual ports.
+- Adjust KEY SENSITIVITY from 25% to 150%. The responsive setting previously
+  labeled 200% is now the 100% default. Its smooth curve boosts soft presses
+  without abruptly clipping louder notes.
 
 RECORDING AND LAYERING
 ----------------------

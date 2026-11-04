@@ -6,7 +6,7 @@ The repository also includes a MIDI keyboard emulator that sends computer-keyboa
 
 ## Downloads
 
-- `release/LayerKeysStudio-v9.exe` — player, recorder, arranger, and WAV/MP3/MIDI exporter
+- `release/LayerKeysStudio-v12.exe` — player, recorder, arranger, and WAV/MP3/MIDI exporter
 - `release/MidiKeyboardEmulator.exe` — QWERTY-to-virtual-MIDI controller
 
 See the files in `docs/` for setup and usage instructions.
@@ -15,6 +15,7 @@ See the files in `docs/` for setup and usage instructions.
 
 - Automatic USB MIDI keyboard detection
 - Selectable MIDI input with automatic preference for physical keyboards
+- Adjustable 25%–150% key-sensitivity curve, calibrated to a responsive 100% default
 - One-button octave switching
 - No-loop recording by default, with optional 2/4/8-bar loops
 - Layered track timeline with waveform-style MIDI clips

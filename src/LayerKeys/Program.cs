@@ -357,7 +357,7 @@ namespace LayerKeys
         IntPtr midiIn = IntPtr.Zero, midiOut = IntPtr.Zero;
         Midi.MidiInProc midiCallback;
         string connectedDevice = "", midiDeviceSignature = "";
-        int connectedDeviceIndex = -1, octave = 0, tempo = 100, bars = 0, program = 0;
+        int connectedDeviceIndex = -1, octave = 0, tempo = 100, bars = 0, program = 0, velocitySensitivity = 100;
         int recordingStartMs;
         bool playing, recording, refreshingMidiDevices;
         bool exporting, abortExportRequested;
@@ -374,6 +374,7 @@ namespace LayerKeys
         Button recordButton, playButton, stopButton, splitButton, clearButton, saveButton, loadButton, exportWavButton, exportMp3Button, exportMidiButton;
         ComboBox soundBox, barsBox, recordModeBox, midiInputBox;
         NumericUpDown tempoBox;
+        TrackBar sensitivityBar;
         PianoControl piano;
         ArrangementView arrangement;
         Panel trackList, progressFill, headerPanel, scrollPanel, exportOverlay;
@@ -450,6 +451,10 @@ namespace LayerKeys
             Label inputCaption = MakeLabel("MIDI INPUT", 8, FontStyle.Bold, Muted); inputCaption.Location = new Point(460, 154);
             midiInputBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(459, 173), Width = 245, FlatStyle = FlatStyle.Flat };
             midiInputBox.SelectedIndexChanged += delegate { if (!refreshingMidiDevices && midiInputBox.Enabled && midiInputBox.SelectedIndex >= 0) ConnectMidiDevice(midiInputBox.SelectedIndex); };
+            Label sensitivityCaption = MakeLabel("KEY SENSITIVITY", 8, FontStyle.Bold, Muted); sensitivityCaption.Location = new Point(725, 154);
+            sensitivityBar = new TrackBar { Minimum = 25, Maximum = 150, Value = 100, TickStyle = TickStyle.None, Location = new Point(721, 169), Width = 145, Height = 42 };
+            Label sensitivityValue = MakeLabel("100%", 8, FontStyle.Bold, Teal); sensitivityValue.Location = new Point(864, 177); sensitivityValue.Size = new Size(44, 18); sensitivityValue.TextAlign = ContentAlignment.MiddleRight;
+            sensitivityBar.ValueChanged += delegate { velocitySensitivity = sensitivityBar.Value; sensitivityValue.Text = velocitySensitivity + "%"; };
 
             Button minus = MakeButton("−   OCTAVE", Paper, Ink, 108, 55); minus.Location = new Point(play.Width - 306, 52); minus.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             Button plus = MakeButton("+   OCTAVE", Paper, Ink, 108, 55); plus.Location = new Point(play.Width - 138, 52); plus.Anchor = AnchorStyles.Top | AnchorStyles.Right;
@@ -458,7 +463,7 @@ namespace LayerKeys
             Label shortcuts = MakeLabel("Z / X keys", 8, FontStyle.Regular, Muted); shortcuts.Location = new Point(play.Width - 197, 108); shortcuts.Anchor = AnchorStyles.Top | AnchorStyles.Right;
 
             piano = new PianoControl { Location = new Point(38, 225), Width = play.Width - 76, Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top };
-            play.Controls.AddRange(new Control[] { eyebrow, title, hintLabel, soundCaption, soundBox, tempoCaption, tempoBox, barsCaption, barsBox, inputCaption, midiInputBox, minus, octaveLabel, plus, shortcuts, piano });
+            play.Controls.AddRange(new Control[] { eyebrow, title, hintLabel, soundCaption, soundBox, tempoCaption, tempoBox, barsCaption, barsBox, inputCaption, midiInputBox, sensitivityCaption, sensitivityBar, sensitivityValue, minus, octaveLabel, plus, shortcuts, piano });
 
             RoundedPanel studio = new RoundedPanel { Height = 450, Width = stack.Width, BackColor = Dark, Margin = Padding.Empty, Padding = new Padding(34), Location = new Point(0, 403) };
             stack.Controls.Add(studio); stack.SizeChanged += delegate { studio.Width = stack.Width; };
@@ -583,8 +588,23 @@ namespace LayerKeys
 
         void HandleMidi(int status, int inputNote, int velocity)
         {
-            if (status == 0x90 && velocity > 0) NoteOn(inputNote, velocity);
+            if (status == 0x90 && velocity > 0)
+            {
+                int adjustedVelocity = AdjustVelocity(velocity);
+                NoteOn(inputNote, adjustedVelocity);
+            }
             else if (status == 0x80 || (status == 0x90 && velocity == 0)) NoteOff(inputNote);
+        }
+
+        int AdjustVelocity(int velocity)
+        {
+            // Change the curve rather than multiplying and clipping. This preserves
+            // the full velocity range and keeps the response gradual at high settings.
+            double normalized = Math.Max(1, Math.Min(127, velocity)) / 127.0;
+            // 100% is calibrated to the response users previously selected at 200%.
+            double sensitivity = velocitySensitivity / 50.0;
+            double exponent = Math.Pow(2.0, 1.0 - sensitivity);
+            return Math.Max(1, Math.Min(127, (int)Math.Round(127.0 * Math.Pow(normalized, exponent))));
         }
 
         void NoteOn(int inputNote, int velocity)
