@@ -20,6 +20,7 @@ Windows executables are published as GitHub Release assets rather than committed
 - Layered track timeline with waveform-style MIDI clips
 - Optional microphone recording to a separate audio track while MIDI is recorded
 - Selectable microphone input with real audio waveforms, playback, splitting, project persistence, and audio export
+- Live, normalized min/max waveforms for microphone tracks, including quiet recordings
 - Free clip positioning without grid snapping
 - Track splitting, muting, moving, and deletion
 - Editable project save/load

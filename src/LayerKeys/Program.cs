@@ -290,17 +290,28 @@ namespace LayerKeys
                             int pixels = Math.Max(1, (int)clip.Width); int sampleRate = Math.Max(1, track.AudioSampleRate);
                             long first = (long)track.TrimStartMs * sampleRate / 1000;
                             long last = Math.Min(track.AudioData.Length / 2, (long)trimEnd * sampleRate / 1000);
+                            int displayPeak = 0; long peakStep = Math.Max(1, (last - first) / 50000);
+                            for (long sample = first; sample < last; sample += peakStep)
+                            {
+                                long bi = sample * 2; if (bi + 1 >= track.AudioData.Length) break;
+                                displayPeak = Math.Max(displayPeak, Math.Abs((int)(short)(track.AudioData[bi] | (track.AudioData[bi + 1] << 8))));
+                            }
+                            displayPeak = Math.Max(512, displayPeak);
+                            using (Pen centerLine = new Pen(Color.FromArgb(track.Muted ? 55 : 105, Color.White), 1)) e.Graphics.DrawLine(centerLine, clip.Left, middle, clip.Right, middle);
                             for (int px = 0; px < pixels; px++)
                             {
                                 long from = first + (last - first) * px / pixels, to = first + (last - first) * (px + 1) / pixels;
-                                int peak = 0; long step = Math.Max(1, (to - from) / 8);
+                                int minimum = 32767, maximum = -32768; long step = Math.Max(1, (to - from) / 24);
                                 for (long sample = from; sample < to; sample += step)
                                 {
                                     long bi = sample * 2; if (bi + 1 >= track.AudioData.Length) break;
-                                    peak = Math.Max(peak, Math.Abs((int)(short)(track.AudioData[bi] | (track.AudioData[bi + 1] << 8))));
+                                    int value = (short)(track.AudioData[bi] | (track.AudioData[bi + 1] << 8));
+                                    minimum = Math.Min(minimum, value); maximum = Math.Max(maximum, value);
                                 }
-                                float amp = Math.Max(1, peak / 32768f * clip.Height * .45f);
-                                e.Graphics.DrawLine(wave, clip.Left + px, middle - amp, clip.Left + px, middle + amp);
+                                if (maximum < minimum) minimum = maximum = 0;
+                                float top = middle - maximum / (float)displayPeak * clip.Height * .43f;
+                                float bottom = middle - minimum / (float)displayPeak * clip.Height * .43f;
+                                e.Graphics.DrawLine(wave, clip.Left + px, top, clip.Left + px, bottom);
                             }
                         }
                         else foreach (NoteEvent note in track.Events)
@@ -444,6 +455,7 @@ namespace LayerKeys
         MemoryStream microphoneBuffer;
         ManualResetEvent microphoneStopped;
         WaveOutEvent audioOutput;
+        long lastMicrophoneWaveformRefresh;
         readonly object microphoneLock = new object();
 
         Label connectionLabel, octaveLabel, statusLabel, barLabel, hintLabel;
@@ -847,6 +859,7 @@ namespace LayerKeys
         void StartMicrophoneRecording()
         {
             microphoneBuffer = new MemoryStream(); microphoneStopped = new ManualResetEvent(false);
+            lastMicrophoneWaveformRefresh = 0;
             microphoneCapture = new WaveInEvent { DeviceNumber = microphoneInputBox.SelectedIndex, WaveFormat = new WaveFormat(44100, 16, 1), BufferMilliseconds = 40 };
             microphoneCapture.DataAvailable += delegate(object sender, WaveInEventArgs args)
             {
@@ -909,6 +922,11 @@ namespace LayerKeys
                 if (recordingMidiTrack != null) recordingMidiTrack.LengthMs = length;
                 if (recordingAudioTrack != null) recordingAudioTrack.LengthMs = length;
                 arrangement.DefaultDurationMs = length; arrangement.TotalBars = Math.Max(8, TimelineBars()); arrangement.Invalidate();
+            }
+            if (recordingAudioTrack != null && microphoneBuffer != null && elapsed - lastMicrophoneWaveformRefresh >= 120)
+            {
+                lock (microphoneLock) recordingAudioTrack.AudioData = microphoneBuffer.ToArray();
+                lastMicrophoneWaveformRefresh = elapsed; arrangement.Invalidate();
             }
             int loop = TimelineMs();
             long from = lastElapsed; long to = elapsed;

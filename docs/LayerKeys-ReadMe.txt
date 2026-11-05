@@ -35,6 +35,8 @@ RECORDING AND LAYERING
 - NEW TRACK → Layer on top records from bar 1 over the existing arrangement.
 - NEW TRACK → Record after existing appends the take after the last track.
 - Recordings appear as colored waveform-style clips on a traditional timeline.
+- Microphone clips draw their real waveform live while recording. Quiet takes are
+  visually normalized so their waveform remains readable without changing sound.
 - Drag a clip left or right to move it freely. Bar lines are visual guides only;
   clips no longer snap to them.
 - Waveform peaks show MIDI note velocity and horizontal marks show duration.
