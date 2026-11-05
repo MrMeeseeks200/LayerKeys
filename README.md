@@ -6,10 +6,7 @@ The repository also includes a MIDI keyboard emulator that sends computer-keyboa
 
 ## Downloads
 
-- `release/LayerKeysStudio-v12.exe` — player, recorder, arranger, and WAV/MP3/MIDI exporter
-- `release/MidiKeyboardEmulator.exe` — QWERTY-to-virtual-MIDI controller
-
-See the files in `docs/` for setup and usage instructions.
+Windows executables are published as GitHub Release assets rather than committed to the repository. See the latest release for the player/recorder and MIDI keyboard emulator, and see `docs/` for setup and usage instructions.
 
 ## Highlights
 
@@ -19,6 +16,8 @@ See the files in `docs/` for setup and usage instructions.
 - One-button octave switching
 - No-loop recording by default, with optional 2/4/8-bar loops
 - Layered track timeline with waveform-style MIDI clips
+- Optional microphone recording to a separate audio track while MIDI is recorded
+- Selectable microphone input with real audio waveforms, playback, splitting, project persistence, and audio export
 - Free clip positioning without grid snapping
 - Track splitting, muting, moving, and deletion
 - Editable project save/load
@@ -30,7 +29,7 @@ See the files in `docs/` for setup and usage instructions.
 
 The applications are Windows Forms programs targeting .NET Framework 4. The current Layer Keys build embeds NAudio 1.10.0 for Windows loopback capture. FFmpeg is required at runtime for MP3 conversion; WAV and MIDI export do not require FFmpeg.
 
-The source files are under `src/`. The checked-in executables were built with the .NET Framework C# compiler included with Windows.
+The source files are under `src/`. Release executables are built with the .NET Framework C# compiler included with Windows and uploaded only to GitHub Releases.
 
 ## Third-party software
 

@@ -82,7 +82,58 @@ namespace LayerKeys
         public int TrimStartMs;
         public int TrimEndMs;
         public bool Muted;
+        public bool IsAudio;
+        public int AudioSampleRate = 44100;
+        public byte[] AudioData = new byte[0];
         public readonly List<NoteEvent> Events = new List<NoteEvent>();
+    }
+
+    internal sealed class ArrangementAudioProvider : IWaveProvider
+    {
+        readonly IList<Track> tracks;
+        readonly int startPositionMs, loopMs, leadInFrames;
+        readonly bool loop;
+        long outputFrame;
+        readonly WaveFormat format = new WaveFormat(44100, 16, 2);
+
+        public ArrangementAudioProvider(IList<Track> sourceTracks, int positionMs, int repeatMs, bool shouldLoop, int leadInMs)
+        {
+            tracks = sourceTracks; startPositionMs = Math.Max(0, positionMs); loopMs = Math.Max(1, repeatMs); loop = shouldLoop;
+            leadInFrames = Math.Max(0, leadInMs) * format.SampleRate / 1000;
+        }
+
+        public WaveFormat WaveFormat { get { return format; } }
+
+        public int Read(byte[] buffer, int offset, int count)
+        {
+            int frames = count / 4;
+            for (int frame = 0; frame < frames; frame++, outputFrame++)
+            {
+                int mixed = 0;
+                if (outputFrame >= leadInFrames)
+                {
+                    long timelineFrame = (long)startPositionMs * format.SampleRate / 1000 + outputFrame - leadInFrames;
+                    if (loop) timelineFrame %= Math.Max(1L, (long)loopMs * format.SampleRate / 1000);
+                    foreach (Track track in tracks)
+                    {
+                        if (!track.IsAudio || track.Muted || track.AudioData == null || track.AudioData.Length < 2) continue;
+                        int sampleRate = Math.Max(1, track.AudioSampleRate);
+                        long timelineMs = timelineFrame * 1000 / format.SampleRate;
+                        long sourceFrame = (timelineMs - track.StartMs) * sampleRate / 1000;
+                        long trimStart = (long)track.TrimStartMs * sampleRate / 1000;
+                        int trimEndMs = track.TrimEndMs > 0 ? track.TrimEndMs : track.LengthMs;
+                        long trimEnd = (long)Math.Max(0, trimEndMs) * sampleRate / 1000;
+                        if (sourceFrame < trimStart || sourceFrame >= trimEnd) continue;
+                        long byteIndex = sourceFrame * 2;
+                        if (byteIndex < 0 || byteIndex + 1 >= track.AudioData.Length) continue;
+                        mixed += (short)(track.AudioData[byteIndex] | (track.AudioData[byteIndex + 1] << 8));
+                    }
+                }
+                short value = (short)Math.Max(short.MinValue, Math.Min(short.MaxValue, mixed));
+                int at = offset + frame * 4; buffer[at] = (byte)value; buffer[at + 1] = (byte)(value >> 8); buffer[at + 2] = (byte)value; buffer[at + 3] = (byte)(value >> 8);
+            }
+            return frames * 4;
+        }
     }
 
     internal sealed class PendingNote
@@ -233,7 +284,25 @@ namespace LayerKeys
                     float middle = clip.Y + clip.Height / 2f;
                     using (Pen wave = new Pen(Color.FromArgb(track.Muted ? 100 : 235, Color.White), 1.4f))
                     {
-                        foreach (NoteEvent note in track.Events)
+                        if (track.IsAudio && track.AudioData != null && track.AudioData.Length >= 2)
+                        {
+                            int pixels = Math.Max(1, (int)clip.Width); int sampleRate = Math.Max(1, track.AudioSampleRate);
+                            long first = (long)track.TrimStartMs * sampleRate / 1000;
+                            long last = Math.Min(track.AudioData.Length / 2, (long)trimEnd * sampleRate / 1000);
+                            for (int px = 0; px < pixels; px++)
+                            {
+                                long from = first + (last - first) * px / pixels, to = first + (last - first) * (px + 1) / pixels;
+                                int peak = 0; long step = Math.Max(1, (to - from) / 8);
+                                for (long sample = from; sample < to; sample += step)
+                                {
+                                    long bi = sample * 2; if (bi + 1 >= track.AudioData.Length) break;
+                                    peak = Math.Max(peak, Math.Abs((int)(short)(track.AudioData[bi] | (track.AudioData[bi + 1] << 8))));
+                                }
+                                float amp = Math.Max(1, peak / 32768f * clip.Height * .45f);
+                                e.Graphics.DrawLine(wave, clip.Left + px, middle - amp, clip.Left + px, middle + amp);
+                            }
+                        }
+                        else foreach (NoteEvent note in track.Events)
                         {
                             float x = HeaderWidth + (startBars + note.Start / (float)Math.Max(1, BarDurationMs)) * bw;
                             float noteWidth = Math.Max(2, (float)note.Duration / Math.Max(1, BarDurationMs) * bw);
@@ -369,10 +438,17 @@ namespace LayerKeys
         readonly Dictionary<int, PendingNote> pending = new Dictionary<int, PendingNote>();
         readonly List<ScheduledOff> scheduledOffs = new List<ScheduledOff>();
         readonly HashSet<int> liveOutputNotes = new HashSet<int>();
+        Track recordingMidiTrack, recordingAudioTrack;
+        WaveInEvent microphoneCapture;
+        MemoryStream microphoneBuffer;
+        ManualResetEvent microphoneStopped;
+        WaveOutEvent audioOutput;
+        readonly object microphoneLock = new object();
 
         Label connectionLabel, octaveLabel, statusLabel, barLabel, hintLabel;
         Button recordButton, playButton, stopButton, splitButton, clearButton, saveButton, loadButton, exportWavButton, exportMp3Button, exportMidiButton;
-        ComboBox soundBox, barsBox, recordModeBox, midiInputBox;
+        ComboBox soundBox, barsBox, recordModeBox, midiInputBox, microphoneInputBox;
+        CheckBox microphoneEnabledBox;
         NumericUpDown tempoBox;
         TrackBar sensitivityBar;
         PianoControl piano;
@@ -399,12 +475,13 @@ namespace LayerKeys
             Midi.midiOutOpen(out midiOut, Midi.MidiMapper, IntPtr.Zero, IntPtr.Zero, 0);
             SetProgram(program);
             RefreshMidiDevice();
+            RefreshMicrophones();
 
             timer.Interval = 10;
             timer.Tick += TransportTick;
             timer.Start();
             deviceTimer.Interval = 1800;
-            deviceTimer.Tick += delegate { RefreshMidiDevice(); };
+            deviceTimer.Tick += delegate { RefreshMidiDevice(); RefreshMicrophones(); };
             deviceTimer.Start();
             FormClosing += HandleFormClosing;
             KeyDown += FormKeyDown;
@@ -475,7 +552,10 @@ namespace LayerKeys
             Label modeCaption = MakeLabel("NEW TRACK", 8, FontStyle.Bold, Color.FromArgb(186, 198, 191)); modeCaption.Location = new Point(studio.Width - 230, 26); modeCaption.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             recordModeBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(studio.Width - 232, 47), Width = 194, FlatStyle = FlatStyle.Flat, Anchor = AnchorStyles.Top | AnchorStyles.Right };
             recordModeBox.Items.AddRange(new object[] { "Layer on top", "Record after existing" }); recordModeBox.SelectedIndex = 0;
-            studio.Controls.AddRange(new Control[] { modeCaption, recordModeBox });
+            microphoneEnabledBox = new CheckBox { Text = "Record microphone on separate track", AutoSize = true, Location = new Point(studio.Width - 232, 80), Anchor = AnchorStyles.Top | AnchorStyles.Right, ForeColor = Color.FromArgb(205, 215, 209), BackColor = Color.Transparent };
+            microphoneInputBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(studio.Width - 232, 101), Width = 194, FlatStyle = FlatStyle.Flat, Anchor = AnchorStyles.Top | AnchorStyles.Right, Enabled = false };
+            microphoneEnabledBox.CheckedChanged += delegate { microphoneInputBox.Enabled = microphoneEnabledBox.Checked && microphoneInputBox.Items.Count > 0; };
+            studio.Controls.AddRange(new Control[] { modeCaption, recordModeBox, microphoneEnabledBox, microphoneInputBox });
 
             recordButton = MakeButton("●  RECORD A TRACK", Coral, Color.White, 172, 48); recordButton.Location = new Point(38, 119); recordButton.Click += delegate { ToggleRecording(); };
             playButton = MakeButton("▶  PLAY", Color.FromArgb(57, 69, 65), Color.White, 95, 48); playButton.Location = new Point(220, 119); playButton.Click += delegate { if (playing) StopTransport(); else StartTransport(); };
@@ -557,6 +637,28 @@ namespace LayerKeys
             ConnectMidiDevice(selected);
         }
 
+        void RefreshMicrophones()
+        {
+            if (microphoneInputBox == null || recording) return;
+            int count;
+            try { count = WaveIn.DeviceCount; } catch { count = 0; }
+            string selected = microphoneInputBox.SelectedItem as string;
+            List<string> names = new List<string>();
+            for (int i = 0; i < count; i++)
+            {
+                try { names.Add(WaveIn.GetCapabilities(i).ProductName); }
+                catch { names.Add("Microphone " + (i + 1)); }
+            }
+            bool unchanged = microphoneInputBox.Items.Count == names.Count;
+            if (unchanged) for (int i = 0; i < names.Count; i++) if (!string.Equals(microphoneInputBox.Items[i].ToString(), names[i], StringComparison.Ordinal)) { unchanged = false; break; }
+            if (unchanged) return;
+            microphoneInputBox.Items.Clear(); foreach (string name in names) microphoneInputBox.Items.Add(name);
+            int index = selected == null ? -1 : names.IndexOf(selected); if (index < 0 && names.Count > 0) index = 0;
+            if (index >= 0) microphoneInputBox.SelectedIndex = index;
+            microphoneInputBox.Enabled = microphoneEnabledBox.Checked && names.Count > 0;
+            if (names.Count == 0) microphoneEnabledBox.Checked = false;
+        }
+
         bool IsVirtualMidiPort(string name)
         {
             string value = (name ?? "").ToLowerInvariant();
@@ -614,7 +716,7 @@ namespace LayerKeys
             int visual = note;
             while (visual < 48) visual += 12; while (visual > 72) visual -= 12;
             piano.ActiveNotes.Add(visual); piano.Invalidate();
-            if (recording)
+            if (recording && recordingMidiTrack != null)
             {
                 int raw = (int)Math.Max(0, Elapsed() - recordingStartMs);
                 int pos = bars == 0 ? raw : Math.Min(LoopMs() - 1, raw);
@@ -629,16 +731,15 @@ namespace LayerKeys
             Send(0x80, note, 0); liveOutputNotes.Remove(note);
             int visual = note; while (visual < 48) visual += 12; while (visual > 72) visual -= 12;
             piano.ActiveNotes.Remove(visual); piano.Invalidate();
-            if (recording && pending.ContainsKey(inputNote))
+            if (recording && recordingMidiTrack != null && pending.ContainsKey(inputNote))
             {
                 PendingNote p = pending[inputNote]; int raw = (int)Math.Max(0, Elapsed() - recordingStartMs); int pos = bars == 0 ? raw : Math.Min(LoopMs(), raw); int duration = pos - p.Start;
                 if (duration <= 0) duration = 40;
-                CurrentTrack().Events.Add(new NoteEvent { Note = p.Note, Velocity = p.Velocity, Start = p.Start, Duration = Math.Max(40, duration) });
+                recordingMidiTrack.Events.Add(new NoteEvent { Note = p.Note, Velocity = p.Velocity, Start = p.Start, Duration = Math.Max(40, duration) });
                 pending.Remove(inputNote);
             }
         }
 
-        Track CurrentTrack() { return tracks[tracks.Count - 1]; }
         int BarMs() { return 4 * 60000 / tempo; }
         int LoopMs() { return (bars > 0 ? bars : 1) * BarMs(); }
         int TimelineBars()
@@ -666,14 +767,15 @@ namespace LayerKeys
         void StartTransport() { StartTransportAt(0); }
         void StartTransportAt(int positionMs)
         {
-            AllNotesOff(); playing = true; transportStart = clock.ElapsedMilliseconds + 80 - positionMs; lastElapsed = positionMs - 1;
+            AllNotesOff(); StopAudioPlayback(); playing = true; transportStart = clock.ElapsedMilliseconds + 80 - positionMs; lastElapsed = positionMs - 1;
+            StartAudioPlayback(positionMs, 80);
             playButton.Text = "❚❚  PAUSE"; statusLabel.Text = recording ? "RECORDING" : "PLAYING";
         }
 
         void StopTransport()
         {
             if (recording) FinishRecording();
-            playing = false; AllNotesOff(); scheduledOffs.Clear();
+            playing = false; AllNotesOff(); StopAudioPlayback(); scheduledOffs.Clear();
             playButton.Text = "▶  PLAY"; statusLabel.Text = "READY"; progressFill.Width = 0; barLabel.Text = "1 / " + TimelineBars();
             if (arrangement != null) { arrangement.PlayheadBar = 0; arrangement.Invalidate(); }
         }
@@ -690,8 +792,20 @@ namespace LayerKeys
                     int end = existing.TrimEndMs > 0 ? existing.TrimEndMs : (existing.LengthMs > 0 ? existing.LengthMs : LoopMs());
                     startMs = Math.Max(startMs, existing.StartMs + end);
                 }
-            Track t = new Track { Name = "Track " + (tracks.Count + 1), ColorIndex = tracks.Count % 5, StartBar = startMs / Math.Max(1, BarMs()), StartMs = startMs, LengthMs = bars > 0 ? LoopMs() : BarMs() };
-            tracks.Add(t); recording = true; pending.Clear();
+            int takeNumber = tracks.Count + 1;
+            recordingMidiTrack = new Track { Name = "Keyboard " + takeNumber, ColorIndex = tracks.Count % 5, StartBar = startMs / Math.Max(1, BarMs()), StartMs = startMs, LengthMs = bars > 0 ? LoopMs() : BarMs() };
+            tracks.Add(recordingMidiTrack); recordingAudioTrack = null; recording = true; pending.Clear();
+            if (microphoneEnabledBox.Checked && microphoneInputBox.SelectedIndex >= 0)
+            {
+                recordingAudioTrack = new Track { Name = "Microphone " + takeNumber, ColorIndex = tracks.Count % 5, StartBar = startMs / Math.Max(1, BarMs()), StartMs = startMs, LengthMs = bars > 0 ? LoopMs() : BarMs(), IsAudio = true, AudioSampleRate = 44100 };
+                tracks.Add(recordingAudioTrack);
+                try { StartMicrophoneRecording(); }
+                catch (Exception ex)
+                {
+                    tracks.Remove(recordingAudioTrack); recordingAudioTrack = null;
+                    MessageBox.Show(this, "The microphone could not be opened, so this take will record the keyboard only.\n\n" + ex.Message, "Microphone unavailable", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
             recordingStartMs = startMs;
             recordButton.Text = "●  FINISH TRACK"; recordButton.BackColor = Color.FromArgb(190, 73, 57);
             StartTransportAt(recordingStartMs); DrawTracks();
@@ -701,14 +815,69 @@ namespace LayerKeys
         {
             if (!recording) return;
             int loop = bars == 0 ? Math.Max(100, (int)(Elapsed() - recordingStartMs)) : LoopMs();
-            CurrentTrack().LengthMs = loop;
+            if (recordingMidiTrack != null) recordingMidiTrack.LengthMs = loop;
             foreach (PendingNote p in pending.Values)
-                CurrentTrack().Events.Add(new NoteEvent { Note = p.Note, Velocity = p.Velocity, Start = p.Start, Duration = Math.Max(40, loop - p.Start) });
+                if (recordingMidiTrack != null) recordingMidiTrack.Events.Add(new NoteEvent { Note = p.Note, Velocity = p.Velocity, Start = p.Start, Duration = Math.Max(40, loop - p.Start) });
+            StopMicrophoneRecording(loop);
             pending.Clear(); recording = false;
             recordButton.Text = "●  RECORD A TRACK"; recordButton.BackColor = Coral;
-            if (CurrentTrack().Events.Count == 0) tracks.RemoveAt(tracks.Count - 1);
+            if (recordingMidiTrack != null && recordingMidiTrack.Events.Count == 0) tracks.Remove(recordingMidiTrack);
+            if (recordingAudioTrack != null && (recordingAudioTrack.AudioData == null || recordingAudioTrack.AudioData.Length == 0)) tracks.Remove(recordingAudioTrack);
+            recordingMidiTrack = null; recordingAudioTrack = null;
             statusLabel.Text = playing ? "PLAYING" : "READY"; DrawTracks();
-            if (bars == 0 && playing) { playing = false; AllNotesOff(); scheduledOffs.Clear(); playButton.Text = "▶  PLAY"; statusLabel.Text = "READY"; progressFill.Width = 0; }
+            if (bars == 0 && playing) { playing = false; AllNotesOff(); StopAudioPlayback(); scheduledOffs.Clear(); playButton.Text = "▶  PLAY"; statusLabel.Text = "READY"; progressFill.Width = 0; }
+        }
+
+        void StartMicrophoneRecording()
+        {
+            microphoneBuffer = new MemoryStream(); microphoneStopped = new ManualResetEvent(false);
+            microphoneCapture = new WaveInEvent { DeviceNumber = microphoneInputBox.SelectedIndex, WaveFormat = new WaveFormat(44100, 16, 1), BufferMilliseconds = 40 };
+            microphoneCapture.DataAvailable += delegate(object sender, WaveInEventArgs args)
+            {
+                if (args.BytesRecorded <= 0) return;
+                lock (microphoneLock) if (microphoneBuffer != null) microphoneBuffer.Write(args.Buffer, 0, args.BytesRecorded);
+            };
+            microphoneCapture.RecordingStopped += delegate(object sender, StoppedEventArgs args) { if (microphoneStopped != null) microphoneStopped.Set(); };
+            microphoneCapture.StartRecording();
+        }
+
+        void StopMicrophoneRecording(int durationMs)
+        {
+            WaveInEvent capture = microphoneCapture; microphoneCapture = null;
+            if (capture == null) return;
+            try { capture.StopRecording(); if (microphoneStopped != null) microphoneStopped.WaitOne(1200); } catch { }
+            try { capture.Dispose(); } catch { }
+            byte[] audio;
+            lock (microphoneLock) { audio = microphoneBuffer == null ? new byte[0] : microphoneBuffer.ToArray(); if (microphoneBuffer != null) microphoneBuffer.Dispose(); microphoneBuffer = null; }
+            if (recordingAudioTrack != null)
+            {
+                int maxBytes = Math.Max(0, durationMs) * recordingAudioTrack.AudioSampleRate / 1000 * 2;
+                if (bars > 0 && audio.Length > maxBytes) Array.Resize(ref audio, maxBytes);
+                recordingAudioTrack.AudioData = audio;
+                recordingAudioTrack.LengthMs = audio.Length * 1000 / Math.Max(1, recordingAudioTrack.AudioSampleRate * 2);
+                if (bars > 0) recordingAudioTrack.LengthMs = durationMs;
+            }
+            if (microphoneStopped != null) { microphoneStopped.Dispose(); microphoneStopped = null; }
+        }
+
+        void StartAudioPlayback(int positionMs, int leadInMs)
+        {
+            bool hasAudio = false; foreach (Track track in tracks) if (track.IsAudio && !track.Muted && track.AudioData != null && track.AudioData.Length > 0) { hasAudio = true; break; }
+            if (!hasAudio) return;
+            try
+            {
+                audioOutput = new WaveOutEvent();
+                audioOutput.Init(new ArrangementAudioProvider(tracks, positionMs, TimelineMs(), bars > 0, leadInMs));
+                audioOutput.Play();
+            }
+            catch { StopAudioPlayback(); }
+        }
+
+        void StopAudioPlayback()
+        {
+            if (audioOutput == null) return;
+            try { audioOutput.Stop(); audioOutput.Dispose(); } catch { }
+            audioOutput = null;
         }
 
         void TransportTick(object sender, EventArgs e)
@@ -720,14 +889,16 @@ namespace LayerKeys
             long elapsed = Elapsed(); if (elapsed < 0) return;
             if (recording && bars == 0)
             {
-                CurrentTrack().LengthMs = Math.Max(BarMs() / 8, (int)(elapsed - recordingStartMs));
-                arrangement.DefaultDurationMs = CurrentTrack().LengthMs; arrangement.TotalBars = Math.Max(8, TimelineBars()); arrangement.Invalidate();
+                int length = Math.Max(BarMs() / 8, (int)(elapsed - recordingStartMs));
+                if (recordingMidiTrack != null) recordingMidiTrack.LengthMs = length;
+                if (recordingAudioTrack != null) recordingAudioTrack.LengthMs = length;
+                arrangement.DefaultDurationMs = length; arrangement.TotalBars = Math.Max(8, TimelineBars()); arrangement.Invalidate();
             }
             int loop = TimelineMs();
             long from = lastElapsed; long to = elapsed;
             foreach (Track track in tracks)
             {
-                if (track.Muted || (recording && track == CurrentTrack())) continue;
+                if (track.Muted || track.IsAudio || (recording && (track == recordingMidiTrack || track == recordingAudioTrack))) continue;
                 foreach (NoteEvent ev in track.Events)
                 {
                     long firstCycle = Math.Max(0, from / loop);
@@ -771,7 +942,7 @@ namespace LayerKeys
             int split = arrangement.SelectedTimeMs;
             int end = source.TrimEndMs > 0 ? source.TrimEndMs : (source.LengthMs > 0 ? source.LengthMs : LoopMs());
             if (split <= source.TrimStartMs + 25 || split >= end - 25) { MessageBox.Show(this, "Choose a point inside the clip, away from its edges.", "Split a track", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
-            Track second = new Track { Name = "Track " + (tracks.Count + 1), ColorIndex = (source.ColorIndex + 1) % 5, StartBar = source.StartBar, StartMs = source.StartMs, LengthMs = source.LengthMs, TrimStartMs = split, TrimEndMs = end, Muted = source.Muted };
+            Track second = new Track { Name = source.IsAudio ? "Microphone " + (tracks.Count + 1) : "Track " + (tracks.Count + 1), ColorIndex = (source.ColorIndex + 1) % 5, StartBar = source.StartBar, StartMs = source.StartMs, LengthMs = source.LengthMs, TrimStartMs = split, TrimEndMs = end, Muted = source.Muted, IsAudio = source.IsAudio, AudioSampleRate = source.AudioSampleRate, AudioData = source.AudioData };
             List<NoteEvent> firstEvents = new List<NoteEvent>();
             foreach (NoteEvent note in source.Events)
             {
@@ -799,10 +970,12 @@ namespace LayerKeys
                 {
                     using (BinaryWriter writer = new BinaryWriter(File.Create(dialog.FileName)))
                     {
-                        writer.Write("LKSP4"); writer.Write(tempo); writer.Write(bars); writer.Write(soundBox.SelectedIndex); writer.Write(recordModeBox.SelectedIndex); writer.Write(tracks.Count);
+                        writer.Write("LKSP5"); writer.Write(tempo); writer.Write(bars); writer.Write(soundBox.SelectedIndex); writer.Write(recordModeBox.SelectedIndex); writer.Write(tracks.Count);
                         foreach (Track track in tracks)
                         {
-                            writer.Write(track.Name ?? "Track"); writer.Write(track.ColorIndex); writer.Write(track.StartBar); writer.Write(track.StartMs); writer.Write(track.LengthMs); writer.Write(track.TrimStartMs); writer.Write(track.TrimEndMs); writer.Write(track.Muted); writer.Write(track.Events.Count);
+                            writer.Write(track.Name ?? "Track"); writer.Write(track.ColorIndex); writer.Write(track.StartBar); writer.Write(track.StartMs); writer.Write(track.LengthMs); writer.Write(track.TrimStartMs); writer.Write(track.TrimEndMs); writer.Write(track.Muted);
+                            writer.Write(track.IsAudio); writer.Write(track.AudioSampleRate); byte[] audio = track.AudioData ?? new byte[0]; writer.Write(audio.Length); writer.Write(audio);
+                            writer.Write(track.Events.Count);
                             foreach (NoteEvent note in track.Events) { writer.Write(note.Note); writer.Write(note.Velocity); writer.Write(note.Start); writer.Write(note.Duration); }
                         }
                     }
@@ -822,7 +995,7 @@ namespace LayerKeys
                     StopTransport();
                     using (BinaryReader reader = new BinaryReader(File.OpenRead(dialog.FileName)))
                     {
-                        string version = reader.ReadString(); bool version4 = version == "LKSP4", version3 = version == "LKSP3"; if (!version4 && !version3 && version != "LKSP2") throw new InvalidDataException("This is not a supported Layer Keys project.");
+                        string version = reader.ReadString(); bool version5 = version == "LKSP5", version4 = version == "LKSP4", version3 = version == "LKSP3"; if (!version5 && !version4 && !version3 && version != "LKSP2") throw new InvalidDataException("This is not a supported Layer Keys project.");
                         int savedTempo = reader.ReadInt32(), savedBars = reader.ReadInt32(), savedSound = reader.ReadInt32(), savedMode = reader.ReadInt32(), count = reader.ReadInt32();
                         tracks.Clear(); tempoBox.Value = Math.Max(50, Math.Min(180, savedTempo));
                         barsBox.SelectedIndex = savedBars == 0 ? 0 : savedBars == 2 ? 1 : savedBars == 8 ? 3 : 2;
@@ -830,8 +1003,9 @@ namespace LayerKeys
                         for (int i = 0; i < count; i++)
                         {
                             Track track = new Track { Name = reader.ReadString(), ColorIndex = reader.ReadInt32(), StartBar = reader.ReadInt32() };
-                            track.StartMs = version4 ? reader.ReadInt32() : track.StartBar * (4 * 60000 / Math.Max(1, savedTempo));
-                            track.LengthMs = (version4 || version3) ? reader.ReadInt32() : savedBars * (4 * 60000 / Math.Max(1, savedTempo)); track.TrimStartMs = reader.ReadInt32(); track.TrimEndMs = reader.ReadInt32(); track.Muted = reader.ReadBoolean();
+                            track.StartMs = (version5 || version4) ? reader.ReadInt32() : track.StartBar * (4 * 60000 / Math.Max(1, savedTempo));
+                            track.LengthMs = (version5 || version4 || version3) ? reader.ReadInt32() : savedBars * (4 * 60000 / Math.Max(1, savedTempo)); track.TrimStartMs = reader.ReadInt32(); track.TrimEndMs = reader.ReadInt32(); track.Muted = reader.ReadBoolean();
+                            if (version5) { track.IsAudio = reader.ReadBoolean(); track.AudioSampleRate = reader.ReadInt32(); int audioLength = reader.ReadInt32(); if (audioLength < 0 || audioLength > 1024 * 1024 * 1024) throw new InvalidDataException("The project contains an invalid audio track."); track.AudioData = reader.ReadBytes(audioLength); }
                             int notes = reader.ReadInt32(); for (int n = 0; n < notes; n++) track.Events.Add(new NoteEvent { Note = reader.ReadInt32(), Velocity = reader.ReadInt32(), Start = reader.ReadInt32(), Duration = reader.ReadInt32() });
                             tracks.Add(track);
                         }
@@ -935,7 +1109,7 @@ namespace LayerKeys
             }
             events.Sort(delegate(TimedMidiEvent a, TimedMidiEvent b) { int c = a.At.CompareTo(b.At); return c != 0 ? c : a.NoteOn.CompareTo(b.NoteOn); });
 
-            Exception captureError = null; ManualResetEvent stopped = new ManualResetEvent(false); bool started = false;
+            Exception captureError = null; ManualResetEvent stopped = new ManualResetEvent(false); bool started = false; WaveOutEvent exportAudio = null;
             using (WasapiLoopbackCapture capture = new WasapiLoopbackCapture())
             using (WaveFileWriter writer = new WaveFileWriter(fileName, capture.WaveFormat))
             {
@@ -944,6 +1118,8 @@ namespace LayerKeys
                 try
                 {
                     capture.StartRecording(); started = true; WaitWithMessages(350); SetProgram(program);
+                    bool hasAudio = false; foreach (Track track in tracks) if (track.IsAudio && !track.Muted && track.AudioData != null && track.AudioData.Length > 0) { hasAudio = true; break; }
+                    if (hasAudio) { exportAudio = new WaveOutEvent(); exportAudio.Init(new ArrangementAudioProvider(tracks, 0, TimelineMs(), false, 0)); exportAudio.Play(); }
                     Stopwatch renderClock = Stopwatch.StartNew(); int eventIndex = 0; int duration = TimelineMs();
                     while (renderClock.ElapsedMilliseconds <= duration + 250)
                     {
@@ -962,6 +1138,7 @@ namespace LayerKeys
                 finally
                 {
                     AllNotesOff();
+                    if (exportAudio != null) { try { exportAudio.Stop(); exportAudio.Dispose(); } catch { } exportAudio = null; }
                     if (started) { capture.StopRecording(); while (!stopped.WaitOne(10)) Application.DoEvents(); }
                     progressFill.Width = 0;
                 }
@@ -1083,7 +1260,7 @@ namespace LayerKeys
         void HandleFormClosing(object sender, FormClosingEventArgs e)
         {
             if (exporting) { e.Cancel = true; return; }
-            timer.Stop(); deviceTimer.Stop(); CloseMidiInput();
+            timer.Stop(); deviceTimer.Stop(); if (recording) FinishRecording(); StopAudioPlayback(); CloseMidiInput();
             if (midiOut != IntPtr.Zero) { Midi.midiOutReset(midiOut); Midi.midiOutClose(midiOut); midiOut = IntPtr.Zero; }
         }
     }

@@ -2,7 +2,7 @@ LAYER KEYS — QUICK START
 ========================
 
 1. Plug your USB MIDI keyboard into Windows.
-2. Double-click LayerKeysStudio-v12.exe.
+2. Double-click the Layer Keys executable from the latest GitHub release.
 3. Play. Layer Keys automatically connects to the first available MIDI input.
 
 PLAYING
@@ -22,6 +22,10 @@ RECORDING AND LAYERING
   STOP, and playback runs through the arrangement once without repeating.
 - Select 2, 4, or 8 bars when you want an automatically repeating loop.
 - Press RECORD A TRACK, then play. Recording stops at the end of the loop.
+- To record voice or another acoustic source too, enable RECORD MICROPHONE ON
+  SEPARATE TRACK and choose a microphone. The keyboard and microphone are captured
+  simultaneously as independent clips, so either can be moved, split, or muted.
+- Leave the microphone option off for the original one-button keyboard workflow.
 - Press RECORD A TRACK again to add another layer while earlier tracks play.
 - NEW TRACK → Layer on top records from bar 1 over the existing arrangement.
 - NEW TRACK → Record after existing appends the take after the last track.
@@ -38,7 +42,8 @@ RECORDING AND LAYERING
 
 PROJECTS AND EXPORTING
 ----------------------
-- SAVE PROJECT stores the complete editable arrangement as an .lkproj file.
+- SAVE PROJECT stores the complete editable arrangement, including recorded
+  microphone audio, as an .lkproj file.
 - LOAD PROJECT restores its tempo, sounds, tracks, splits, mutes, and positions.
 - EXPORT WAV and EXPORT MP3 capture the same Windows synthesizer used during
   playback, so the exported instrument tone matches what you hear in the app.
