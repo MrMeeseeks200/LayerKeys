@@ -18,6 +18,8 @@ PLAYING
 - KEYBOARD GAIN changes the instrument level without changing the sensitivity
   curve. MIC GAIN independently changes microphone-track playback and export
   level. Both range from 0% to 200% and are saved with the project.
+- Lower keyboard notes receive gradual loudness compensation so the piano feels
+  more even across its range without making higher notes harsher.
 
 RECORDING AND LAYERING
 ----------------------

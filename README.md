@@ -14,6 +14,7 @@ Windows executables are published as GitHub Release assets rather than committed
 - Selectable MIDI input with automatic preference for physical keyboards
 - Adjustable 25%–150% key-sensitivity curve, calibrated to a responsive 100% default
 - Independent 0%–200% keyboard and microphone gain controls
+- Smooth bass-note loudness compensation for a more even keyboard response
 - One-button octave switching
 - No-loop recording by default, with optional 2/4/8-bar loops
 - Layered track timeline with waveform-style MIDI clips

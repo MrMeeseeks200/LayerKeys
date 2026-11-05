@@ -716,15 +716,19 @@ namespace LayerKeys
             return Math.Max(1, Math.Min(127, (int)Math.Round(127.0 * Math.Pow(normalized, exponent))));
         }
 
-        int ApplyKeyboardGain(int velocity)
+        int ApplyKeyboardGain(int velocity, int note)
         {
-            return Math.Max(0, Math.Min(127, (int)Math.Round(velocity * keyboardGain / 100.0)));
+            // The Windows piano is perceptually quieter in its lower register.
+            // Add a gradual bass compensation below middle C before applying the
+            // user's overall keyboard gain. Upper notes retain their response.
+            double bassCompensation = note < 60 ? 1.0 + (60 - note) * 0.0125 : 1.0;
+            return Math.Max(0, Math.Min(127, (int)Math.Round(velocity * bassCompensation * keyboardGain / 100.0)));
         }
 
         void NoteOn(int inputNote, int velocity)
         {
             int note = Math.Max(0, Math.Min(127, inputNote + octave * 12));
-            Send(0x90, note, ApplyKeyboardGain(velocity)); liveOutputNotes.Add(note);
+            Send(0x90, note, ApplyKeyboardGain(velocity, note)); liveOutputNotes.Add(note);
             int visual = note;
             while (visual < 48) visual += 12; while (visual > 72) visual -= 12;
             piano.ActiveNotes.Add(visual); piano.Invalidate();
@@ -920,7 +924,7 @@ namespace LayerKeys
                         long at = cycle * loop + track.StartMs + ev.Start;
                         if (at > from && at <= to)
                         {
-                            Send(0x90, ev.Note, ApplyKeyboardGain(ev.Velocity));
+                            Send(0x90, ev.Note, ApplyKeyboardGain(ev.Velocity, ev.Note));
                             scheduledOffs.Add(new ScheduledOff { Note = ev.Note, Due = nowClock + ev.Duration });
                         }
                     }
@@ -1118,7 +1122,7 @@ namespace LayerKeys
                 int at = track.StartMs + note.Start;
                 if (at + note.Duration < 0) continue;
                 at = Math.Max(0, at);
-                events.Add(new TimedMidiEvent { At = at, Note = note.Note, Velocity = ApplyKeyboardGain(note.Velocity), NoteOn = true });
+                events.Add(new TimedMidiEvent { At = at, Note = note.Note, Velocity = ApplyKeyboardGain(note.Velocity, note.Note), NoteOn = true });
                 events.Add(new TimedMidiEvent { At = at + Math.Max(40, note.Duration), Note = note.Note, Velocity = 0, NoteOn = false });
             }
             events.Sort(delegate(TimedMidiEvent a, TimedMidiEvent b) { int c = a.At.CompareTo(b.At); return c != 0 ? c : a.NoteOn.CompareTo(b.NoteOn); });
@@ -1224,7 +1228,7 @@ namespace LayerKeys
                     foreach (Track track in tracks) if (!track.Muted) foreach (NoteEvent note in track.Events)
                     {
                         long tick = Math.Max(0, (track.StartMs + note.Start) * (long)tempo * ppq / 60000L); long end = tick + Math.Max(1, note.Duration * (long)tempo * ppq / 60000L);
-                        events.Add(new MidiFileEvent { Tick = tick, NoteOn = true, Note = note.Note, Velocity = ApplyKeyboardGain(note.Velocity) }); events.Add(new MidiFileEvent { Tick = end, NoteOn = false, Note = note.Note, Velocity = 0 });
+                        events.Add(new MidiFileEvent { Tick = tick, NoteOn = true, Note = note.Note, Velocity = ApplyKeyboardGain(note.Velocity, note.Note) }); events.Add(new MidiFileEvent { Tick = end, NoteOn = false, Note = note.Note, Velocity = 0 });
                     }
                     events.Sort(delegate(MidiFileEvent a, MidiFileEvent b) { int c = a.Tick.CompareTo(b.Tick); return c != 0 ? c : a.NoteOn.CompareTo(b.NoteOn); });
                     using (MemoryStream trackData = new MemoryStream()) using (BinaryWriter tw = new BinaryWriter(trackData))
