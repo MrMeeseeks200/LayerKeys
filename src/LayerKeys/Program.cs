@@ -119,8 +119,8 @@ namespace LayerKeys
                     {
                         if (!track.IsAudio || track.Muted || track.AudioData == null || track.AudioData.Length < 2) continue;
                         int sampleRate = Math.Max(1, track.AudioSampleRate);
-                        long timelineMs = timelineFrame * 1000 / format.SampleRate;
-                        long sourceFrame = (timelineMs - track.StartMs) * sampleRate / 1000;
+                        long trackStartFrame = (long)track.StartMs * format.SampleRate / 1000;
+                        long sourceFrame = (timelineFrame - trackStartFrame) * sampleRate / format.SampleRate;
                         long trimStart = (long)track.TrimStartMs * sampleRate / 1000;
                         int trimEndMs = track.TrimEndMs > 0 ? track.TrimEndMs : track.LengthMs;
                         long trimEnd = (long)Math.Max(0, trimEndMs) * sampleRate / 1000;
