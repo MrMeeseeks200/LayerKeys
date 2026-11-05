@@ -15,6 +15,9 @@ PLAYING
 - Adjust KEY SENSITIVITY from 25% to 150%. The responsive setting previously
   labeled 200% is now the 100% default. Its smooth curve boosts soft presses
   without abruptly clipping louder notes.
+- KEYBOARD GAIN changes the instrument level without changing the sensitivity
+  curve. MIC GAIN independently changes microphone-track playback and export
+  level. Both range from 0% to 200% and are saved with the project.
 
 RECORDING AND LAYERING
 ----------------------
